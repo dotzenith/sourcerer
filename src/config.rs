@@ -1,6 +1,6 @@
 //! Config + identity, modelled loosely on an SSH setup.
 //!
-//! Everything lives under one "home" directory (overridable with `SENDER_HOME`,
+//! Everything lives under one "home" directory (overridable with `SR_HOME`,
 //! which makes it easy to run two instances on one machine for testing):
 //!   - `identity.key` — 32 raw secret-key bytes (your stable address lives here)
 //!   - `config.toml`  — the peer list + optional download dir
@@ -107,20 +107,20 @@ impl Instance {
 }
 
 fn home_dir() -> Result<PathBuf> {
-    if let Ok(h) = std::env::var("SENDER_HOME") {
+    if let Ok(h) = std::env::var("SR_HOME") {
         return Ok(PathBuf::from(h));
     }
-    // Always use an XDG-style `~/.config/sender`, including on macOS (where
+    // Always use an XDG-style `~/.config/sourcerer`, including on macOS (where
     // ProjectDirs would otherwise pick `~/Library/Application Support`).
     let config_home = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => {
             let base = directories::BaseDirs::new()
-                .context("could not determine your home directory; set SENDER_HOME")?;
+                .context("could not determine your home directory; set SR_HOME")?;
             base.home_dir().join(".config")
         }
     };
-    Ok(config_home.join("sender"))
+    Ok(config_home.join("sourcerer"))
 }
 
 fn load_config(path: &Path) -> Result<Config> {

@@ -1,34 +1,82 @@
-# sender
+# Sourcerer
 
-Send and receive files peer-to-peer over the internet, addressed by cryptographic
-key instead of IP. Built on [iroh](https://github.com/n0-computer/iroh) 1.0 (QUIC +
-NAT traversal + discovery) and [iroh-blobs](https://github.com/n0-computer/iroh-blobs)
-for BLAKE3-verified, resumable transfers. No port forwarding, no knowing anyone's IP.
+Send and receive files peer-to-peer over the internet, addressed by a cryptographic key instead of an IP. Built on [iroh](https://github.com/n0-computer/iroh) and [iroh-blobs](https://github.com/n0-computer/iroh-blobs), so you get QUIC, NAT traversal, and BLAKE3-verified transfers without port forwarding or knowing anyone's IP.
 
-The trust model is SSH-config-like and mutual: every machine has a persistent
-identity (a keypair on disk), and its public key — the **endpoint id** — is the
-address you share. A config file lists known peers by alias. That list is an address
-book when sending and an allowlist when receiving: a receiver only accepts files from
-peers it has listed, and a sender only dials peers it has listed.
+The trust model is SSH-config-like and mutual: every machine has a persistent identity, and its public key — the **endpoint id** — is the address you share. A config file lists known peers by alias, and that list works both ways: an address book when sending, an allowlist when receiving. A receiver only accepts files from peers it has listed, and a sender only dials peers it has listed.
 
-## Install
+The binary is `sr`.
 
+## Build
+
+#### Shell
 ```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/dotzenith/sourcerer/releases/latest/download/sourcerer-installer.sh | sh
+```
+
+#### Powershell
+```sh
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/dotzenith/sourcerer/releases/latest/download/sourcerer-installer.ps1 | iex"
+```
+
+#### Binaries
+Pre-Compiled binaries for linux, mac, and windows are available in [Releases](https://github.com/dotzenith/sourcerer/releases)
+
+#### Source
+```sh
+git clone https://github.com/dotzenith/sourcerer
+cd sourcerer
 cargo build --release
-# binary at target/release/sender
+./target/release/sr
 ```
 
-## Setup (do this once per machine)
+## Usage
 
+```
+Send files peer-to-peer over iroh
+
+Usage: sr <COMMAND>
+
+Commands:
+  init     Generate an identity if needed and print your endpoint id
+  id       Print your endpoint id (the address you share with peers)
+  receive  Listen for incoming files from allowlisted peers
+  send     Send a file to a configured peer
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+### Examples
+
+#### Set up your identity (once per machine)
 ```sh
-sender init            # generates your identity and prints your endpoint id
+sr init
+# prints your endpoint id — share it with the peers you want to talk to
 ```
 
-Exchange endpoint ids with your peers, then edit your config (path printed by
-`init`, e.g. `~/.config/sender/config.toml` or `$SENDER_HOME/config.toml`):
+#### Receive
+```sh
+sr receive                 # wait for files from any configured peer
+sr receive --from laptop   # only accept from specific peers this session
+```
+
+#### Send
+```sh
+sr send laptop ./report.pdf
+```
+
+Both sides show a live progress bar. The receiver auto-accepts files from allowlisted peers and rejects everyone else.
+
+## Configuration
+
+`sr` reads a config file at `~/.config/sourcerer/config.toml` (override the whole home with `SR_HOME`). After `sr init`, add the endpoint ids your peers shared with you.
+
+### Example `config.toml`
 
 ```toml
-# optional; defaults to the current directory
+# where received files land; defaults to the current directory
 download_dir = "~/Downloads"
 
 [peers.laptop]
@@ -38,67 +86,16 @@ id = "the-endpoint-id-your-peer-shared"
 id = "another-endpoint-id"
 ```
 
-The same `[peers]` table is used in both directions — add anyone you want to send to
-or receive from.
-
-## Usage
-
-On the receiving machine:
-
-```sh
-sender receive                 # wait for files from any configured peer
-sender receive --from laptop   # only accept from specific peers this session
-```
-
-On the sending machine:
-
-```sh
-sender send laptop ./report.pdf
-```
-
-The receiver auto-accepts files from allowlisted peers and rejects everyone else.
-The sender shows a live progress bar.
-
-Other commands:
-
-```sh
-sender id      # print your endpoint id (raw, pipeable — not logged)
-```
+The same `[peers]` table is used in both directions — add anyone you want to send to or receive from.
 
 ## Logging
 
-Status messages are basic timestamped, leveled logs on stderr. By default you
-see this tool's own `info` messages; dependencies stay quiet unless they hit an
-error. For more detail, set `RUST_LOG`:
+Status messages are basic timestamped logs on stderr. By default you see `sr`'s own `info` messages; dependencies stay quiet unless they error. Set `RUST_LOG` for more:
 
 ```sh
-RUST_LOG=iroh=debug sender receive   # verbose iroh/network logging
-RUST_LOG=debug sender send laptop ./f
+RUST_LOG=iroh=debug sr receive
 ```
 
-## How it works
+## License
 
-1. The sender hashes the file and starts serving it as an iroh-blobs provider,
-   restricted to the target peer. It then opens a small **control** connection to
-   the receiver announcing the file name, size, and hash. The receiver checks the
-   sender's endpoint id against its allowlist here — unknown peers are dropped
-   before any data moves.
-2. The receiver **pulls** the blob from the sender over the standard iroh-blobs
-   protocol, showing a live progress bar. The download only finishes once the
-   whole file has arrived and been BLAKE3-verified, and the sender keeps serving
-   until the receiver confirms — so large transfers can't be truncated.
-3. The receiver exports the blob to `download_dir` under the original file name
-   (with ` (1)`, ` (2)`… added if a file by that name already exists) and signals
-   the sender, which then stops serving.
-
-## Testing two instances on one machine
-
-Set `SENDER_HOME` to give each instance its own identity, config, and store:
-
-```sh
-SENDER_HOME=/tmp/recv sender init
-SENDER_HOME=/tmp/send sender init
-# cross-add the printed ids into each other's config.toml, then:
-SENDER_HOME=/tmp/recv sender receive &
-SENDER_HOME=/tmp/send sender send <alias> ./file
-```
+MIT

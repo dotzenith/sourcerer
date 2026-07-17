@@ -10,9 +10,9 @@ use iroh_blobs::Hash;
 use serde::{Serialize, de::DeserializeOwned};
 
 /// ALPN for our control protocol. Bump the suffix on any wire-breaking change.
-pub const CTRL_ALPN: &[u8] = b"sender/ctrl/1";
+pub const CTRL_ALPN: &[u8] = b"sourcerer/ctrl/1";
 
-/// Announced by the sender before the blob is pushed.
+/// Announced by the sender before the blob is transferred.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Header {
     /// The file name to write on the receiving side (base name only).

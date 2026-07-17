@@ -1,7 +1,11 @@
 [package]
-name = "sender"
+name = "sourcerer"
 version = "0.1.0"
 edition = "2024"
+
+[[bin]]
+name = "sr"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.103"

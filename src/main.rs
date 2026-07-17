@@ -1,4 +1,4 @@
-//! sender — send and receive files peer-to-peer over iroh, addressed by key.
+//! sourcerer — send and receive files peer-to-peer over iroh, addressed by key.
 
 mod config;
 mod proto;
@@ -18,7 +18,7 @@ use crate::config::Instance;
 /// asks for more, e.g. `RUST_LOG=iroh=debug`).
 fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("error,sender=info"));
+        .unwrap_or_else(|_| EnvFilter::new("error,sr=info"));
     fmt()
         .with_env_filter(filter)
         .with_target(false)
@@ -27,7 +27,7 @@ fn init_logging() {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "sender", version, about = "Send files peer-to-peer over iroh")]
+#[command(name = "sr", version, about = "Send files peer-to-peer over iroh")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
             tracing::info!("share that endpoint id with peers so they can add you under [peers]");
         }
         // Raw stdout: this is machine-readable output meant to be captured, e.g.
-        // `id = "$(sender id)"`, so it deliberately stays out of the log stream.
+        // `id = "$(sr id)"`, so it deliberately stays out of the log stream.
         Command::Id => {
             println!("{}", instance.secret_key()?.public());
         }
