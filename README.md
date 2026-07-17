@@ -2,9 +2,11 @@
 
 Send and receive files peer-to-peer over the internet, addressed by a cryptographic key instead of an IP. Built on [iroh](https://github.com/n0-computer/iroh) and [iroh-blobs](https://github.com/n0-computer/iroh-blobs), so you get QUIC, NAT traversal, and BLAKE3-verified transfers without port forwarding or knowing anyone's IP.
 
-The trust model is SSH-config-like and mutual: every machine has a persistent identity, and its public key — the **endpoint id** — is the address you share. A config file lists known peers by alias, and that list works both ways: an address book when sending, an allowlist when receiving. A receiver only accepts files from peers it has listed, and a sender only dials peers it has listed.
+The trust model is SSH-config-like and mutual: every machine has a persistent identity, and its public key, the **endpoint id* is the address you share. A config file lists known peers by alias, and that list works both ways: an address book when sending, an allowlist when receiving. A receiver only accepts files from peers it has listed, and a sender only dials peers it has listed.
 
 The binary is `sr`.
+
+Full disclosure, this is slopware. I just wanted a quick file sending tool and I had read up on iroh recently so I figured I would just ask claude make this. This project contains no hand-crafted, artisanal bugs, thanks to claude.
 
 ## Build
 
