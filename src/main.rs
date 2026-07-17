@@ -9,8 +9,22 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::Instance;
+
+/// Basic leveled, timestamped log output on stderr. Our own messages log at
+/// `info`; dependencies stay quiet unless they hit an `error` (or `RUST_LOG`
+/// asks for more, e.g. `RUST_LOG=iroh=debug`).
+fn init_logging() {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("error,sender=info"));
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .init();
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "sender", version, about = "Send files peer-to-peer over iroh")]
@@ -42,17 +56,20 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_logging();
     let cli = Cli::parse();
     let instance = Instance::load()?;
 
     match cli.command {
         Command::Init => {
             let key = instance.secret_key()?;
-            println!("home:        {}", instance.home.display());
-            println!("config:      {}", instance.config_path().display());
-            println!("endpoint id: {}", key.public());
-            println!("\nShare that endpoint id with peers so they can add you under [peers].");
+            tracing::info!("home: {}", instance.home.display());
+            tracing::info!("config: {}", instance.config_path().display());
+            tracing::info!("endpoint id: {}", key.public());
+            tracing::info!("share that endpoint id with peers so they can add you under [peers]");
         }
+        // Raw stdout: this is machine-readable output meant to be captured, e.g.
+        // `id = "$(sender id)"`, so it deliberately stays out of the log stream.
         Command::Id => {
             println!("{}", instance.secret_key()?.public());
         }

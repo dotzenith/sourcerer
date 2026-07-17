@@ -56,16 +56,14 @@ pub async fn run(instance: Instance, only: Vec<String>) -> Result<()> {
         .accept(CTRL_ALPN, ctrl)
         .spawn();
 
-    println!("listening as {}", endpoint.id());
-    println!("saving to {}", download_dir.display());
-    println!("accepting from:");
-    for alias in allow.values() {
-        println!("  - {alias}");
-    }
-    println!("(ctrl-c to stop)");
+    let peers = allow.values().cloned().collect::<Vec<_>>().join(", ");
+    tracing::info!("listening as {}", endpoint.id());
+    tracing::info!("saving to {}", download_dir.display());
+    tracing::info!("accepting from: {peers}");
+    tracing::info!("ready (ctrl-c to stop)");
 
     tokio::signal::ctrl_c().await?;
-    println!("\nshutting down");
+    tracing::info!("shutting down");
     router.shutdown().await?;
     Ok(())
 }
@@ -81,7 +79,7 @@ struct CtrlHandler {
 impl ProtocolHandler for CtrlHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         self.handle(conn).await.map_err(|e| {
-            eprintln!("transfer failed: {e:#}");
+            tracing::warn!("transfer failed: {e:#}");
             AcceptError::from_err(std::io::Error::other(e.to_string()))
         })
     }
@@ -93,13 +91,13 @@ impl CtrlHandler {
         let remote = conn.remote_id();
         let Some(alias) = self.allow.get(&remote).cloned() else {
             conn.close(0u32.into(), b"not authorized");
-            println!("rejected connection from unknown peer {remote}");
+            tracing::warn!("rejected connection from unknown peer {remote}");
             return Ok(());
         };
 
         let (mut send, mut recv) = conn.accept_bi().await?;
         let header: Header = proto::read_frame(&mut recv).await?;
-        println!("incoming: {} ({} bytes) from {alias}", header.name, header.size);
+        tracing::info!("incoming: {} ({} bytes) from {alias}", header.name, header.size);
         // Ack -> the sender keeps serving while we pull the blob from them.
         proto::write_byte(&mut send, OK).await?;
 
@@ -130,7 +128,7 @@ impl CtrlHandler {
         proto::write_byte(&mut send, OK).await?;
         send.finish().ok();
 
-        println!("received {} -> {}", header.name, dest.display());
+        tracing::info!("received {} -> {}", header.name, dest.display());
         conn.closed().await;
         Ok(())
     }

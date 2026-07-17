@@ -62,7 +62,18 @@ The sender shows a live progress bar.
 Other commands:
 
 ```sh
-sender id      # print your endpoint id
+sender id      # print your endpoint id (raw, pipeable — not logged)
+```
+
+## Logging
+
+Status messages are basic timestamped, leveled logs on stderr. By default you
+see this tool's own `info` messages; dependencies stay quiet unless they hit an
+error. For more detail, set `RUST_LOG`:
+
+```sh
+RUST_LOG=iroh=debug sender receive   # verbose iroh/network logging
+RUST_LOG=debug sender send laptop ./f
 ```
 
 ## How it works
