@@ -1,14 +1,24 @@
-//! `send <peer> <path>`: push a single file to a configured peer.
+//! `send <peer> <path>`: make a file available to a configured peer and wait
+//! for them to pull it.
+//!
+//! We use iroh-blobs' pull path (the well-tested one): this side hashes the file
+//! and serves it as a provider, restricted to the target peer, then announces it
+//! over the control channel. The receiver downloads it and, only once it has the
+//! whole file, signals us so we can stop serving. This is what makes large
+//! transfers reliable — we keep serving until the data has actually landed.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use futures_lite::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use iroh::{Endpoint, endpoint::presets};
+use iroh::{
+    Endpoint, EndpointId,
+    endpoint::presets,
+    protocol::Router,
+};
 use iroh_blobs::{
-    api::remote::PushProgressItem,
-    protocol::{GetRequest, PushRequest},
+    BlobsProtocol,
+    provider::events::{AbortReason, ConnectMode, EventMask, EventSender, ProviderMessage},
     store::mem::MemStore,
 };
 
@@ -35,7 +45,7 @@ pub async fn run(instance: Instance, peer_alias: String, path: PathBuf) -> Resul
         .secret_key(instance.secret_key()?)
         .bind()
         .await?;
-    // Wait until discovery is ready so dialing the peer by id resolves reliably.
+    // Wait until discovery is ready so the peer can dial us back to pull the data.
     endpoint.online().await;
 
     // Hash the file into an in-memory store; this gives us the blob's hash.
@@ -43,56 +53,65 @@ pub async fn run(instance: Instance, peer_alias: String, path: PathBuf) -> Resul
     println!("hashing {name}...");
     let tag = store.blobs().add_path(&abs).await?;
 
-    // Open the control channel and announce what we're about to push. If the
-    // peer doesn't have us in their allowlist, this is where it fails.
+    // Serve the blob, but only to the intended receiver.
+    let blobs = BlobsProtocol::new(&store, Some(single_peer_gate(peer_id)));
+    let router = Router::builder(endpoint.clone())
+        .accept(iroh_blobs::ALPN, blobs)
+        .spawn();
+
+    // Announce over the control channel. If the peer doesn't have us in their
+    // allowlist, this is where it fails.
     let ctrl = endpoint
         .connect(peer_id, CTRL_ALPN)
         .await
         .with_context(|| format!("connecting to peer '{peer_alias}'"))?;
     let (mut send, mut recv) = ctrl.open_bi().await?;
-    let header = Header { name: name.clone(), size, hash: tag.hash };
-    proto::write_frame(&mut send, &header).await?;
+    proto::write_frame(&mut send, &Header { name: name.clone(), size, hash: tag.hash }).await?;
+
+    // First byte: the peer accepted (allowlist passed) and is downloading.
     if proto::read_byte(&mut recv).await.context("peer rejected the transfer")? != OK {
         bail!("peer rejected the transfer");
     }
+    let spinner = spinner(&format!("sending {name} ({size} bytes) to {peer_alias}"));
 
-    // Push the blob over the standard blobs protocol, driving a progress bar.
-    let blob_conn = endpoint.connect(peer_id, iroh_blobs::ALPN).await?;
-    let request = PushRequest::from(GetRequest::blob(tag.hash));
-    let pb = progress_bar(size);
-    let mut stream = store.remote().execute_push(blob_conn, request).stream();
-    while let Some(item) = stream.next().await {
-        match item {
-            PushProgressItem::Progress(n) => pb.set_position(n),
-            PushProgressItem::Done(_) => pb.finish_and_clear(),
-            PushProgressItem::Error(e) => {
-                pb.abandon();
-                return Err(anyhow::anyhow!("push failed: {e}"));
-            }
-        }
-    }
-
-    // Tell the receiver the blob is fully transferred so it can export, then
-    // wait for its confirmation.
-    proto::write_byte(&mut send, OK).await?;
-    send.finish().ok();
-    if proto::read_byte(&mut recv).await.context("waiting for confirmation")? != OK {
+    // Second byte: the peer has received and saved the whole file, so we can
+    // stop serving.
+    let confirmed = proto::read_byte(&mut recv).await;
+    spinner.finish_and_clear();
+    if confirmed.context("waiting for the peer to finish")? != OK {
         bail!("peer failed to save the file");
     }
 
     println!("sent {name} ({size} bytes) to {peer_alias}");
+    router.shutdown().await?;
     endpoint.close().await;
     Ok(())
 }
 
-fn progress_bar(size: u64) -> ProgressBar {
-    let pb = ProgressBar::new(size);
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{bar:40.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, {eta})",
-        )
-        .unwrap()
-        .progress_chars("=>-"),
-    );
+/// Only serve blobs to the one peer we're sending to. The hash is only shared
+/// with them over the control channel, but this gates connections regardless.
+fn single_peer_gate(allowed: EndpointId) -> EventSender {
+    let mask = EventMask { connected: ConnectMode::Intercept, ..EventMask::DEFAULT };
+    let (tx, mut rx) = EventSender::channel(32, mask);
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if let ProviderMessage::ClientConnected(msg) = msg {
+                let res = if msg.endpoint_id == Some(allowed) {
+                    Ok(())
+                } else {
+                    Err(AbortReason::Permission)
+                };
+                msg.tx.send(res).await.ok();
+            }
+        }
+    });
+    tx
+}
+
+fn spinner(msg: &str) -> ProgressBar {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::with_template("{spinner:.cyan} {msg}").unwrap());
+    pb.set_message(msg.to_string());
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
     pb
 }

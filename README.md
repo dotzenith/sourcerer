@@ -67,15 +67,18 @@ sender id      # print your endpoint id
 
 ## How it works
 
-1. The sender hashes the file, then opens a small **control** connection to the
-   receiver announcing the file name, size, and hash. The receiver checks the
+1. The sender hashes the file and starts serving it as an iroh-blobs provider,
+   restricted to the target peer. It then opens a small **control** connection to
+   the receiver announcing the file name, size, and hash. The receiver checks the
    sender's endpoint id against its allowlist here — unknown peers are dropped
    before any data moves.
-2. The sender **pushes** the blob over the standard iroh-blobs protocol. The
-   receiver's blob store is gated by the same allowlist.
-3. Once the blob is complete in the receiver's store, it's exported to
-   `download_dir` under the original file name (with ` (1)`, ` (2)`… added if a
-   file by that name already exists).
+2. The receiver **pulls** the blob from the sender over the standard iroh-blobs
+   protocol, showing a live progress bar. The download only finishes once the
+   whole file has arrived and been BLAKE3-verified, and the sender keeps serving
+   until the receiver confirms — so large transfers can't be truncated.
+3. The receiver exports the blob to `download_dir` under the original file name
+   (with ` (1)`, ` (2)`… added if a file by that name already exists) and signals
+   the sender, which then stops serving.
 
 ## Testing two instances on one machine
 

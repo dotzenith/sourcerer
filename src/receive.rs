@@ -1,24 +1,25 @@
-//! `receive [--from <alias>...]`: listen for pushes from allowlisted peers.
+//! `receive [--from <alias>...]`: listen for transfers from allowlisted peers.
+//!
+//! A sender connects to us on the control channel and announces a file. We check
+//! their endpoint id against the allowlist, then pull the blob from them with
+//! iroh-blobs' downloader (which only completes once the whole file has arrived
+//! and been verified) and export it to the download directory.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::PathBuf,
     sync::Arc,
 };
 
 use anyhow::{Result, bail};
+use futures_lite::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use iroh::{
     Endpoint, EndpointId,
     endpoint::{Connection, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use iroh_blobs::{
-    BlobsProtocol,
-    provider::events::{
-        AbortReason, ConnectMode, EventMask, EventSender, ProviderMessage, RequestMode,
-    },
-    store::fs::FsStore,
-};
+use iroh_blobs::{api::downloader::DownloadProgressItem, store::fs::FsStore};
 
 use crate::{
     config::Instance,
@@ -28,7 +29,10 @@ use crate::{
 pub async fn run(instance: Instance, only: Vec<String>) -> Result<()> {
     let allow = Arc::new(instance.allowlist(&only)?);
     if allow.is_empty() {
-        bail!("no peers configured to receive from; add some to {}", instance.config_path().display());
+        bail!(
+            "no peers configured to receive from; add some to {}",
+            instance.config_path().display()
+        );
     }
     let download_dir = Arc::new(instance.download_dir()?);
     std::fs::create_dir_all(download_dir.as_ref())?;
@@ -39,22 +43,16 @@ pub async fn run(instance: Instance, only: Vec<String>) -> Result<()> {
         .await?;
     endpoint.online().await;
 
-    // On-disk store the pushes land in before we export them.
+    // On-disk store that pulled blobs land in before we export them.
     let store = FsStore::load(instance.spool_dir()).await?;
-
-    // Gate blobs connections by endpoint id, and allow pushes (disabled by default).
-    let allowed_ids: HashSet<EndpointId> = allow.keys().copied().collect();
-    let events = connection_gate(allowed_ids);
-    let blobs = BlobsProtocol::new(&store, Some(events));
 
     let ctrl = CtrlHandler {
         allow: allow.clone(),
-        store: store.clone(),
+        store,
         download_dir: download_dir.clone(),
+        endpoint: endpoint.clone(),
     };
-
     let router = Router::builder(endpoint.clone())
-        .accept(iroh_blobs::ALPN, blobs)
         .accept(CTRL_ALPN, ctrl)
         .spawn();
 
@@ -72,33 +70,12 @@ pub async fn run(instance: Instance, only: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// Reject any blobs connection whose peer isn't in the allowlist. Pushes are
-/// enabled here (they're disabled in the default mask because they write to the
-/// local store); the connection gate is what keeps that safe.
-fn connection_gate(allowed: HashSet<EndpointId>) -> EventSender {
-    let mask = EventMask {
-        connected: ConnectMode::Intercept,
-        push: RequestMode::None, // None = process normally (accept), vs the default Disabled
-        ..EventMask::DEFAULT
-    };
-    let (tx, mut rx) = EventSender::channel(32, mask);
-    tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if let ProviderMessage::ClientConnected(msg) = msg {
-                let permitted = matches!(msg.endpoint_id, Some(id) if allowed.contains(&id));
-                let res = if permitted { Ok(()) } else { Err(AbortReason::Permission) };
-                msg.tx.send(res).await.ok();
-            }
-        }
-    });
-    tx
-}
-
 #[derive(Debug, Clone)]
 struct CtrlHandler {
     allow: Arc<HashMap<EndpointId, String>>,
     store: FsStore,
     download_dir: Arc<PathBuf>,
+    endpoint: Endpoint,
 }
 
 impl ProtocolHandler for CtrlHandler {
@@ -123,23 +100,33 @@ impl CtrlHandler {
         let (mut send, mut recv) = conn.accept_bi().await?;
         let header: Header = proto::read_frame(&mut recv).await?;
         println!("incoming: {} ({} bytes) from {alias}", header.name, header.size);
+        // Ack -> the sender keeps serving while we pull the blob from them.
         proto::write_byte(&mut send, OK).await?;
 
-        // Block until the sender signals the push is done...
-        if proto::read_byte(&mut recv).await? != OK {
-            bail!("sender aborted");
+        // Pull the blob. The downloader connects back to the sender and only
+        // finishes once the whole, verified file is in our store.
+        let downloader = self.store.downloader(&self.endpoint);
+        let pb = progress_bar(header.size);
+        let mut stream = downloader.download(header.hash, Some(remote)).stream().await?;
+        while let Some(item) = stream.next().await {
+            match item {
+                DownloadProgressItem::Progress(n) => pb.set_position(n),
+                DownloadProgressItem::Error(e) => {
+                    pb.abandon();
+                    bail!("download failed: {e}");
+                }
+                DownloadProgressItem::DownloadError => {
+                    pb.abandon();
+                    bail!("download failed");
+                }
+                _ => {}
+            }
         }
-        // ...then wait for our own store to actually have the complete blob
-        // (the push lands on a separate connection and may still be flushing).
-        tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            self.store.blobs().observe(header.hash).await_completion(),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("timed out waiting for blob to complete"))??;
+        pb.finish_and_clear();
 
         let dest = unique_path(&self.download_dir, &header.name);
         self.store.blobs().export(header.hash, &dest).await?;
+        // Confirm to the sender that the file is safely written.
         proto::write_byte(&mut send, OK).await?;
         send.finish().ok();
 
@@ -147,6 +134,18 @@ impl CtrlHandler {
         conn.closed().await;
         Ok(())
     }
+}
+
+fn progress_bar(size: u64) -> ProgressBar {
+    let pb = ProgressBar::new(size);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{bar:40.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, {eta})",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+    pb
 }
 
 /// Avoid clobbering an existing file: `name.ext` -> `name (1).ext`, etc.
