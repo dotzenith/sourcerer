@@ -1,7 +1,11 @@
 [package]
 name = "sourcerer"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
+description = "Send files like a sorcerer"
+homepage = "https://github.com/dotzenith/sourcerer"
+repository = "https://github.com/dotzenith/sourcerer"
+license = "MIT"
 
 [[bin]]
 name = "sr"
